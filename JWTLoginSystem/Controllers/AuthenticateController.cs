@@ -1,0 +1,154 @@
+﻿namespace JWTLoginSystem.Controllers
+{
+    [ApiExplorerSettings(GroupName = "Security")]
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AuthenticateController : ControllerBase
+    {
+        private readonly UserManager<IdentityUser> _userManager;
+        private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly IConfiguration _configuration;
+
+        public AuthenticateController(
+            UserManager<IdentityUser> userManager,
+            RoleManager<IdentityRole> roleManager,
+            IConfiguration configuration)
+        {
+            _userManager = userManager;
+            _roleManager = roleManager;
+            _configuration = configuration;
+        }
+
+        /// <summary>
+        /// Method responsible for logging into the system.
+        /// </summary>
+        /// <param name="model">The LoginModelDto instance</param>
+        /// <returns>Returns an asynchronous task that contains information related to the user's login, otherwise it returns Unauthorized.</returns>
+        [HttpPost]
+        [Route("login")]
+        public async Task<IActionResult> Login([FromBody] LoginModelDto model)
+        {
+            var user = await _userManager.FindByNameAsync(model.Username);
+            if(user != null && await _userManager.CheckPasswordAsync(user, model.Password))
+            {
+                var userRoles = await _userManager.GetRolesAsync(user);
+
+                var authClaims = new List<Claim>
+                {
+                    new Claim(ClaimTypes.Name, user.UserName),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                };
+
+                foreach(var userRole in userRoles)
+                {
+                    authClaims.Add(new Claim(ClaimTypes.Role, userRole));
+                }
+
+                var token = GetToken(authClaims);
+
+                return Ok(new { token = new JwtSecurityTokenHandler().WriteToken(token), expiration = token.ValidTo });
+            }
+            return Unauthorized();
+        }
+
+        /// <summary>
+        /// Responsible method of registering users in the system.
+        /// </summary>
+        /// <param name="model">The RegisterModelDto instance</param>
+        /// <returns>Returns an asynchronous task that contains information related to registering users in the system.</returns>
+        [HttpPost]
+        [Route("register")]
+        public async Task<IActionResult> Register([FromBody] RegisterModelDto model)
+        {
+            var userExists = await _userManager.FindByNameAsync(model.Username);
+            if(userExists != null)
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new ResponseLoginDto { Status = "Error", Message = "User already exists!" });
+
+            IdentityUser user = new()
+            {
+                Email = model.Email,
+                SecurityStamp = Guid.NewGuid().ToString(),
+                UserName = model.Username
+            };
+            var result = await _userManager.CreateAsync(user, model.Password);
+            if(!result.Succeeded)
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new ResponseLoginDto
+                    {
+                        Status = "Error",
+                        Message = "User creation failed! Please check user details and try again."
+                    });
+
+            return Ok(new ResponseLoginDto { Status = "Success", Message = "User created successfully!" });
+        }
+
+        /// <summary>
+        /// Responsible method of registering admin users in the system.
+        /// </summary>
+        /// <param name="model">The RegisterModelDto instance</param>
+        /// <returns>Returns an asynchronous task that contains information related to registering admin users in the system.</returns>
+        [HttpPost]
+        [Route("register-admin")]
+        public async Task<IActionResult> RegisterAdmin([FromBody] RegisterModelDto model)
+        {
+            var userExists = await _userManager.FindByNameAsync(model.Username);
+            if(userExists != null)
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new ResponseLoginDto { Status = "Error", Message = "User already exists!" });
+
+            IdentityUser user = new()
+            {
+                Email = model.Email,
+                SecurityStamp = Guid.NewGuid().ToString(),
+                UserName = model.Username
+            };
+            var result = await _userManager.CreateAsync(user, model.Password);
+            if(!result.Succeeded)
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new ResponseLoginDto
+                    {
+                        Status = "Error",
+                        Message = "User creation failed! Please check user details and try again."
+                    });
+
+            if(!await _roleManager.RoleExistsAsync(UserRoles.Admin))
+                await _roleManager.CreateAsync(new IdentityRole(UserRoles.Admin));
+            if(!await _roleManager.RoleExistsAsync(UserRoles.User))
+                await _roleManager.CreateAsync(new IdentityRole(UserRoles.User));
+
+            if(await _roleManager.RoleExistsAsync(UserRoles.Admin))
+            {
+                await _userManager.AddToRoleAsync(user, UserRoles.Admin);
+            }
+            if(await _roleManager.RoleExistsAsync(UserRoles.Admin))
+            {
+                await _userManager.AddToRoleAsync(user, UserRoles.User);
+            }
+            return Ok(new ResponseLoginDto { Status = "Success", Message = "User created successfully!" });
+        }
+
+        /// <summary>
+        /// Responsible for obtaining the token of the logged in user.
+        /// </summary>
+        /// <param name="authClaims">A list of 'Claim' type objects.</param>
+        /// <returns>A<see cref="JwtSecurityToken"/> instance container of all the user's claims.</returns>
+        private JwtSecurityToken GetToken(List<Claim> authClaims)
+        {
+            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"],
+                audience: _configuration["JWT:ValidAudience"],
+                expires: DateTime.Now.AddHours(3),
+                claims: authClaims,
+                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256));
+
+            return token;
+        }
+    }
+}
